@@ -54,7 +54,7 @@ HTTP_ROOT_URL = "http://halfbigdata.eu/"
 
 class TemplateProcessor(object):
     # don't use str.format, because HTML contains so many curly braces
-    def __init__(self, template, defaults=None, delimiter="%%"):
+    def __init__(self, template, delimiter="%%"):
         self.mapper = {}
         self.components = template.split(delimiter)
         # so, components now alternates between literal text and variable names
@@ -75,7 +75,6 @@ class TemplateProcessor(object):
     def realize(self, **value_mapping):
         # destructively update template (because why not, it's not like we are doing concurrency)
         self.substitute(**value_mapping)
-        sys.stderr.write(f"{self.mapper} {value_mapping}")
         return "".join(self.components)
 
 
@@ -146,7 +145,6 @@ def convert_gemtext_to_rss_items(gem_lines, rss_item_template):
         iso_date = m.group() if m else "2022-02-22"
         title = inner[m.span()[1]:].strip() if m else inner
         # convert ISO date to this nonsense RFC format (why, oh why)
-        sys.stderr.write(f"{datetime.datetime.fromisoformat(iso_date + POST_TIME)}\n")
         date = format_datetime(datetime.datetime.fromisoformat(iso_date + POST_TIME))
         yield rss_item_template.realize(title=title, date=date, fn=href)
 
