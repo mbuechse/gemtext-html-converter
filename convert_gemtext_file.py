@@ -1,107 +1,110 @@
 #!/usr/bin/env python
-"""
-HUNTER'S SIMPLE GEMTEXT TO HTML CONVERTER
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A simple script that converts gemtext to HTML. Takes two arguments from stdin -
-args[1](gmi) is an input gemtext file and args[2](html) is an output HTML file. 
-You can run it like
-
-python3 input.gmi output.html
-
-The output file consists of only the lines of gemtext in the input file converted
-to their HTML equivalents: <h1>, <h2>, <h3>, <p>, <a>, <blockquote>, <li>, and 
-<pre> tags. It does not include any boilerplate such as a default <head>
-or wrapping <html> or <body> tags. I wrote it mainly so I could insert converted
-gemtext into a webpage I already started using copy-paste or a templating system
-like Jinja. Extend it as you see fit.
-
-If you have any suggestions on how to make it better you can reach me at
-hunterkb@ksu.edu
-"""
-
-# importing required libraries
-import contextlib
+# This is based on work by huntingb. https://github.com/huntingb/gemtext-html-converter
+import os
 import sys
-import re
 
-# A dictionary that maps regex to match at the beginning of gmi lines to their corresponding HTML tag names. Used by convert_single_line().
-tags_dict = {
-    r"^# (.*)": "h1",
-    r"^## (.*)": "h2",
-    r"^### (.*)": "h3",
-    r"^\* (.*)": "li",
-    r"^> (.*)": "blockquote",
-    r"^=>\s*(\S+)(\s+.*)?": "a"
+TAGS_DICT = {
+    "# ": "<h1>{inner}</h1>",
+    "## ": "<h2>{inner}</h2>",
+    "###": "<h3>{inner}</h3>",
+    "* ": "<li>{inner}</li>",
+    "> ": "<blockquote>{inner}</blockquote>",
+    "=>": '<li><a href="{href}">{inner}</a></li>',
 }
+DEFAULT = "<p>{inner}</p>"
+HTML = \
+r"""<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>%%title%%</title>
+  <meta name=viewport content="width=device-width, initial-scale=1">
+  <style>body {font-family:sans-serif;max-width:40em;margin:auto;} html {overflow-y:scroll;}
+  @media (max-width:50rem) {body {margin:0px 20px;}}</style>
+</head>
+<body>
+<p>This page is an HTML mirror of the <a href="%%fn%%">original gemini page</a>.</p><hr>
+%%body%%
+</body>
+</html>
+"""
+ROOT_URL = "gemini://halfbigdata.eu:47060/"
 
-# This function takes a string of gemtext as input and returns a string of HTML
-def convert_single_line(gmi_line):
-    for pattern in tags_dict.keys():
-        if match := re.match(pattern, gmi_line):
-            tag = tags_dict[pattern]
-            groups = match.groups()
-            if tag == "a":
-                href = groups[0]
-                inner_text = groups[1].strip() if len(groups) > 1 else href
-                return f"<{tag} href='{href}'>{inner_text}</{tag}>"
-            else:
-                inner_text = groups[0].strip()
-                return f"<{tag}>{inner_text}</{tag}>"
-    return f"<p>{gmi_line}</p>"
-            
-# smart open for stdin & stdout
-# credit to https://stackoverflow.com/a/17603000/15956024
-@contextlib.contextmanager
-def smart_open(file_name=None, encoding='r'):
-    if file_name and file_name != 'STDIN' and file_name != 'STDOUT':
-        fh = open(file_name, encoding)
-    elif file_name == 'STDIN':
-        fh = sys.stdin
-    elif file_name == 'STDOUT':
-        fh = sys.stdout
-    else:
-        # will never reach here
-        pass
 
-    try:
-        yield fh
-    finally:
-        if fh is not sys.stdin or fh is not sys.stdout:
-            fh.close()    
-            
-# Reads the contents of the input file line by line and outputs HTML. Renders text in preformat blocks (toggled by ```) as multiline <pre> tags.
-def main(args):
-    input = args[1] if len(args) > 1 else "STDIN"
-    output = args[2] if len(args) > 2 else "STDOUT"
-    
-    with smart_open(input) as gmi, smart_open(output) as html:
-        preformat = False
+def convert_gemtext(lines):
+    title = None
+
+    def generate_html():
+        nonlocal title
         in_list = False
-        for line in gmi:
-            line = line.strip()
-            if len(line):
-                if line.startswith("```") or line.endswith("```"):
-                    preformat = not preformat
-                    repl = "<pre>" if preformat else "</pre>"
-                    html.write(re.sub(r"```", repl, line))
-                elif preformat:
-                    html.write(line)
+        preformat = False
+        for gmi_line in lines:
+            if gmi_line.startswith("```"):
+                preformat = not preformat
+                yield ("</pre>", "<pre>")[int(preformat)]
+                continue
+            if preformat:
+                yield gmi_line
+                continue
+            # skip empty line except in preformat
+            if not gmi_line:
+                continue
+            href = None
+            pattern = TAGS_DICT.get(gmi_line[:2])
+            if not pattern:
+                pattern = TAGS_DICT.get(gmi_line[:3])
+                if not pattern:
+                    pattern = DEFAULT
+                    inner = gmi_line.strip()
                 else:
-                    html_line = convert_single_line(line)
-                    if html_line.startswith("<li>"):
-                        if not in_list:
-                            in_list = True
-                            html.write("<ul>\n")
-                        html.write(html_line)
-                    elif in_list:
-                        in_list = False    
-                        html.write("</ul>\n")
-                        html.write(html_line)
-                    else:
-                        html.write(html_line)
-            html.write("\n")
+                    inner = gmi_line[3:].strip()
+            else:
+                inner = gmi_line[2:].strip()
+            if "{href}" in pattern:
+                href, inner = inner.split(maxsplit=1)
+                # links to local gemini files should be converted to the corresponding html
+                if href.endswith(".gmi") and not (
+                    href.startswith("http://") or href.startswith("gemini://") or href.startswith("/")
+                ):
+                    href = href[:-4] + ".html"
+            if not title and "<h1>" in pattern:
+                title = inner
+            if ("<li>" in pattern) != in_list:
+                in_list = not in_list
+                yield ("</ul>", "<ul>")[int(in_list)]
+            yield pattern.format(inner=inner, href=href)
+        if in_list:
+            yield "</ul>"
+
+    # sure, it's a bit perverse... title is set by generate_html, so we have to call this first
+    htmllines = list(generate_html())
+    return title, htmllines
 
 
-# Main guard
+def process_dir(path):
+    # don't use template.format, because HTML contains so many curly braces
+    template = HTML.split("%%")
+    indexmapper = {"title": None, "body": None, "fn": None}
+    for i, tl in enumerate(template):
+        if tl in indexmapper:
+            indexmapper[tl] = i
+    for fn in os.listdir(path):
+        if not fn.endswith(".gmi"):
+            continue
+        # read the whole file into memory
+        # in the old days this would have been sacrilege, but memory abounds and Python instructions are expensive
+        with open(os.path.join(path, fn), "r") as fileobj:
+            gemtext = fileobj.read()
+        title, htmllines = convert_gemtext(gemtext.splitlines())
+        # destructively update template (because why not, it's not like we are doing concurrency)
+        template[indexmapper["title"]] = title or "(untitled)"
+        template[indexmapper["fn"]] = ROOT_URL + fn
+        template[indexmapper["body"]] = "\n".join(htmllines)
+        # likewise, write out the whole HTML file at once
+        with open(os.path.join(path, fn[:-4] + ".html"), "w") as fileobj:
+            fileobj.write("".join(template))
+        sys.stderr.write(f"done processing: {fn}\n")
+
+
 if __name__ == "__main__":
-    main(sys.argv)
+    process_dir("." if len(sys.argv) < 2 else sys.argv[1])
